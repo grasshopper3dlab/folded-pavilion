@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Folded Pavilion</title>
+<style>
+  body{margin:0;background:#fff;color:#0b0f14;font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial}
+  .wrap{max-width:960px;margin:0 auto;padding:16px;display:grid;gap:12px}
+  h1{font-size:18px;margin:0}
+  .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  input,select{padding:6px 8px;border:1px solid #ccd6e2;border-radius:8px;font:inherit}
+  input[type=number]{width:90px}
+  button{cursor:pointer;border:1px solid #ccd6e2;background:#fff;border-radius:10px;padding:8px 12px;font-weight:700}
+  .canvasWrap{border:1px solid #e2e8f0;border-radius:12px;overflow:hidden}
+  canvas{display:block;width:100%;height:520px;background:#fff}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Folded Pavilion</h1>
+  <div class="bar">
+    <label for="n">Lines:</label>
+    <input id="n" type="number" min="6" max="72" step="2" value="12" />
+    <label for="shape">Shape:</label>
+    <select id="shape">
+      <option value="circle" selected>Circle</option>
+      <option value="square">Square</option>
+    </select>
+    <button id="play">Play</button>
+    <button id="reset">Reset</button>
+    <button id="png">Download PNG</button>
+    <button id="toggleLines">Show folding lines: Off</button>
+  </div>
+  <div class="canvasWrap"><canvas id="cv" width="960" height="520"></canvas></div>
+</div>
+<script>
+(function(){
+  const TAU=Math.PI*2,clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+  const vec=(x=0,y=0,z=0)=>({x,y,z});
+  const add=(a,b)=>vec(a.x+b.x,a.y+b.y,a.z+b.z);
+  const sub=(a,b)=>vec(a.x-b.x,a.y-b.y,a.z-b.z);
+  const mul=(a,s)=>vec(a.x*s,a.y*s,a.z*s);
+  const dot=(a,b)=>a.x*b.x+a.y*b.y+a.z*b.z;
+  const cross=(a,b)=>vec(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);
+  const len=(a)=>Math.hypot(a.x,a.y,a.z);
+  const norm=(a)=>{const L=len(a)||1;return mul(a,1/L)};
+
+  const cam={target:vec(0,0,0),yaw:0.7,pitch:-0.35,dist:2.6,fov:50*Math.PI/180};
+  function camPos(){
+    const cp=Math.cos(cam.pitch),sp=Math.sin(cam.pitch);
+    const cy=Math.cos(cam.yaw),sy=Math.sin(cam.yaw);
+    return add(cam.target,mul(vec(cy*cp,sp,sy*cp),cam.dist));
+  }
+  function project(p,w,h){
+    const pos=camPos();
+    const zdir=norm(sub(cam.target,pos));
+    const xdir=norm(cross(zdir,vec(0,1,0)));
+    const ydir=cross(xdir,zdir);
+    const rel=sub(p,pos);
+    const px=dot(rel,xdir),py=dot(rel,ydir),pz=dot(rel,zdir);
+    const f=1/Math.tan(cam.fov/2),aspect=w/h;
+    return{x:w*(0.5+0.5*(f*px/(aspect*pz))),y:h*(0.5-0.5*(f*py/pz)),z:pz};
+  }
+
+  const cv=document.getElementById('cv');
+  const ctx=cv.getContext('2d');
+  let width=0,height=0,dpr=1;
+
+  let N=12,stage=2,tAnim=0,shape='circle',showLines=false;
+  const radius=0.9;
+
+  function resize(){
+    dpr=Math.min(devicePixelRatio||1,2);
+    const rect=cv.getBoundingClientRect();
+    width=rect.width|0;height=rect.height|0;
+    cv.width=(width*dpr)|0;cv.height=(height*dpr)|0;
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+
+  function edgePoint(angle){
+    if(shape==='circle') return vec(radius*Math.cos(angle),radius*Math.sin(angle),0);
+    const c=Math.cos(angle), s=Math.sin(angle);
+    const scale=radius/Math.max(Math.abs(c),Math.abs(s));
+    return vec(scale*c,scale*s,0);
+  }
+
+  const RINGS=22;
+  function makeMesh(){
+    const segs=N*4;const verts=[];const faces=[];
+    for(let j=0;j<=RINGS;j++){
+      const t=j/RINGS;
+      for(let i=0;i<=segs;i++){
+        const a=TAU*(i/segs);
+        const e=edgePoint(a);
+        verts.push(vec(e.x*t,e.y*t,0));
+      }
+    }
+    const cols=(N*4)+1;
+    for(let j=0;j<RINGS;j++){
+      for(let i=0;i<cols-1;i++){
+        const a=j*cols+i,b=a+1,c=a+cols+1,d=a+cols;
+        faces.push([a,b,c]);faces.push([a,c,d]);
+      }
+    }
+    return{verts,faces,segs};
+  }
+  let baseMesh=makeMesh();
+
+  function foldDeform(p,progress){
+    const theta=Math.atan2(p.y,p.x);
+    const r=Math.hypot(p.x,p.y);
+    const sign=Math.sin(N*theta);
+    const amp=0.25*progress;
+    const z=amp*sign*(r/radius);
+    return vec(p.x,p.y,z);
+  }
+
+  function shadeColor(z){
+    const maxH=0.25; const t=clamp((z+maxH)/(2*maxH),0,1);
+    const r=Math.round(255*t), g=80, b=Math.round(255*(1-t));
+    return `rgb(${r},${g},${b})`;
+  }
+
+  function drawRidgeValleyAxes(){
+    const p0=project(vec(0,0,0),width,height);
+    const dA=TAU/N;
+    ctx.save();
+    ctx.lineWidth=2;
+    ctx.setLineDash([]); ctx.strokeStyle='#000';
+    for(let i=0;i<N;i++){
+      const a=(i+0.25)*dA; const e=edgePoint(a); const p2=project(e,width,height);
+      ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
+    }
+    ctx.setLineDash([6,4]);
+    for(let i=0;i<N;i++){
+      const a=(i+0.75)*dA; const e=edgePoint(a); const p2=project(e,width,height);
+      ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  function render(){
+    resize(); ctx.clearRect(0,0,width,height);
+    const verts=baseMesh.verts.map(p=> (stage>=2? foldDeform(p,tAnim) : p));
+    const P=verts.map(p=>project(p,width,height));
+    const tris=baseMesh.faces.map(f=>({f,z:(verts[f[0]].z+verts[f[1]].z+verts[f[2]].z)/3,proj:(P[f[0]].z+P[f[1]].z+P[f[2]].z)/3})).sort((a,b)=>b.proj-a.proj);
+
+    for(const t of tris){
+      const [a,b,c]=t.f; const A=P[a],B=P[b],C=P[c];
+      ctx.fillStyle=shadeColor(t.z);
+      ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.lineTo(C.x,C.y); ctx.closePath();
+      ctx.fill();
+    }
+
+    if(showLines){ drawRidgeValleyAxes(); }
+  }
+
+  let raf=null,playing=false,startTime=0;
+  function play(){
+    stage=0; tAnim=0; playing=true; startTime=performance.now();
+    function tick(now){
+      const t=(now-startTime)/1000;
+      if(t<1){ stage=0; }
+      else if(t<2){ stage=1; }
+      else { stage=2; tAnim = clamp((t-2)/4, 0, 1); }
+      render();
+      if(t<6){ raf=requestAnimationFrame(tick); } else { playing=false; }
+    }
+    cancelAnimationFrame(raf||0);
+    raf=requestAnimationFrame(tick);
+  }
+
+  function reset(){ stage=2; tAnim=0; playing=false; cancelAnimationFrame(raf||0); render(); }
+
+  function exportPNG(){
+    const tmp=document.createElement('canvas');
+    tmp.width=cv.width; tmp.height=cv.height;
+    const tctx=tmp.getContext('2d'); tctx.drawImage(cv,0,0);
+    const ts=new Date().toISOString().replace(/[:.]/g,'-');
+    const a=document.createElement('a'); a.download=`folded-pavilion_${ts}.png`; a.href=tmp.toDataURL('image/png'); a.click();
+  }
+
+  let dragging=false,lastX=0,lastY=0,panning=false;
+  cv.addEventListener('mousedown',e=>{dragging=true;lastX=e.clientX;lastY=e.clientY;panning=e.shiftKey});
+  window.addEventListener('mouseup',()=>dragging=false);
+  window.addEventListener('mousemove',e=>{
+    if(!dragging)return;
+    const dx=(e.clientX-lastX)/200,dy=(e.clientY-lastY)/200; lastX=e.clientX; lastY=e.clientY;
+    if(panning){ cam.target.x-=dx*cam.dist*0.6; cam.target.y+=dy*cam.dist*0.6; }
+    else { cam.yaw=(cam.yaw+dx)%TAU; cam.pitch=clamp(cam.pitch+dy,-1.3,1.3); }
+    render();
+  });
+  cv.addEventListener('wheel',e=>{ e.preventDefault(); cam.dist=clamp(cam.dist*(1+Math.sign(e.deltaY)*0.1), 0.8, 7); render(); }, {passive:false});
+
+  document.getElementById('n').addEventListener('change',e=>{
+    const v=Math.max(6,Math.min(72,Math.floor(+e.target.value)));
+    N = v % 2 === 0 ? v : v+1; e.target.value=N;
+    baseMesh=makeMesh(); reset();
+  });
+  document.getElementById('shape').addEventListener('change',e=>{ shape=e.target.value; baseMesh=makeMesh(); reset(); });
+  document.getElementById('play').addEventListener('click',play);
+  document.getElementById('reset').addEventListener('click',reset);
+  document.getElementById('png').addEventListener('click',exportPNG);
+  document.getElementById('toggleLines').addEventListener('click',()=>{
+    showLines=!showLines;
+    document.getElementById('toggleLines').textContent = `Show folding lines: ${showLines ? 'On' : 'Off'}`;
+    render();
+  });
+
+  reset();
+})();
+</script>
+</body>
+</html>
